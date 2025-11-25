@@ -1,66 +1,96 @@
-name: Android CI
+name: Build Android with Gomobile
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch: # 允许手动触发
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
+    env:
+      # 指定 Java 版本
+      JAVA_VERSION: '17'
+      # 指定 Go 版本
+      GO_VERSION: '1.22'
+
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          submodules: true
+    # 1. 检出代码 (替代 git clone)
+    # 注意：fetch-depth: 0 和 submodules: recursive 是为了防止之前的子模块错误
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
+    # 2. 设置 Java 环境 (Gradle 需要)
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Set up golang/mobile
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
+    # 3. 设置 Go 环境
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
 
-      - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26d
-          local-cache: true
+    # 4. 安装 Android NDK (Gomobile 必须)
+    - name: Setup Android NDK
+      run: |
+        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653"
+        # 设置环境变量指向具体的 NDK 版本
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
 
-      - name: Build go bindings
-        working-directory: OplusUpdater
-        run: |
-          pwd
-          gomobile init
-          gomobile bind -target=android -androidapi 26 -v ./pkg/updater
+    # 5. 安装 Gomobile 工具
+    - name: Install Gomobile
+      run: |
+        go install golang.org/x/mobile/cmd/gomobile@latest
+        # 将 GOPATH/bin 添加到 PATH
+        echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
+    # 6. 初始化 Gomobile
+    - name: Initialize Gomobile
+      run: gomobile init
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-      - name: Build with Gradle
-        run: ./gradlew assemble
+    # 7. 执行 Gomobile Bind
+    # 您的命令：cd OplusUpdater-Android/OplusUpdater -> gomobile bind ...
+    # 这里假设仓库根目录下有一个 OplusUpdater 文件夹
+    - name: Run Gomobile Bind
+      run: |
+        # 根据您的命令，这里生成 .aar 文件
+        # 注意：如果您的 go.mod 在子目录，可能需要先 cd 进去
+        # 假设 ./OplusUpdater/pkg/updater 是相对于仓库根目录的 Go 包路径
+        gomobile bind -target=android -androidapi 26 -v ./OplusUpdater/pkg/updater
+      
+    # 8. 列出文件以供调试 (可选)
+    # 这一步可以帮您确认生成的 .aar 文件在哪里，以及 gradlew 是否存在
+    - name: Debug File Structure
+      run: ls -R
 
-      - name: Upload Release Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-files-release
-          path: app/build/outputs/apk/release
-          if-no-files-found: error
+    # 9. 赋予 Gradle 执行权限并构建
+    # 您的命令：cd .. -> ./gradlew assemble
+    - name: Build with Gradle
+      run: |
+        chmod +x gradlew
+        ./gradlew assembleDebug
+        # 如果需要 Release 包，请使用 ./gradlew assembleRelease
 
-      - name: Upload Debug Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk-files-debug
-          path: app/build/outputs/apk/debug
-          if-no-files-found: error
+    # 10. 上传构建产物 (APK)
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-debug
+        path: app/build/outputs/apk/debug/*.apk
+        # 如果路径不同，请根据第 8 步的日志调整 path
+
+    # 11. 上传 AAR 产物 (可选，如果您只想要 gomobile 生成的库)
+    - name: Upload AAR Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: gomobile-aar
+        path: ./*.aar
